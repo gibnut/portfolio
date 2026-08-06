@@ -3,16 +3,15 @@ import * as cloudfront from 'aws-cdk-lib/aws-cloudfront';
 import * as origins from 'aws-cdk-lib/aws-cloudfront-origins';
 import * as acm from 'aws-cdk-lib/aws-certificatemanager';
 import * as s3 from 'aws-cdk-lib/aws-s3';
+import * as s3deploy from 'aws-cdk-lib/aws-s3-deployment';
 import { Construct } from 'constructs';
 
 interface PortfolioCDNStackProps extends cdk.StackProps {
   domainName: string;
-  bucket: s3.IBucket;
+  bucketName: string;
+  bucketArn: string;
   certificate: acm.ICertificate;
-  // API Gateway endpoint passed in from API stack
-  // Used to create CloudFront proxy behavior
-  // Never appears in HTML source code
-  apiEndpoint: string;
+  apiOriginDomain: string;
 }
 
 export class PortfolioCDNStack extends cdk.Stack {
@@ -21,52 +20,40 @@ export class PortfolioCDNStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props: PortfolioCDNStackProps) {
     super(scope, id, props);
 
-    const { domainName, bucket, certificate, apiEndpoint } = props;
+    const { domainName, bucketName, bucketArn, certificate, apiOriginDomain } = props;
 
-    // Parse API Gateway origin from full endpoint URL
-    // e.g. https://abc123.execute-api.us-east-1.amazonaws.com/contact
-    // -> abc123.execute-api.us-east-1.amazonaws.com
-    const apiUrl = new URL(apiEndpoint);
-    const apiOriginDomain = apiUrl.hostname;
+    // Import bucket by name/arn rather than passing the object
+    // This breaks the cross-stack object reference that causes the dependency cycle
+    const bucket = s3.Bucket.fromBucketAttributes(this, 'ImportedBucket', {
+      bucketName,
+      bucketArn,
+    });
 
-    // CloudFront function handles all redirects at the edge
-    // www.example.com -> example.com
-    // resume.example.com -> example.com/resume
-    // Appends index.html to directory requests
     const redirectFunction = new cloudfront.Function(this, 'RedirectFunction', {
       functionName: 'portfolio-redirects',
       comment: 'Handles www and subdomain redirects, and appends index.html',
       code: cloudfront.FunctionCode.fromInline(`
 function handler(event) {
   var request = event.request;
-  var host = request.headers.host
-    ? request.headers.host.value
-    : '';
+  var host = request.headers.host ? request.headers.host.value : '';
   var uri = request.uri;
 
-  // Redirect www to apex
   if (host === 'www.${domainName}') {
     return {
       statusCode: 301,
       statusDescription: 'Moved Permanently',
-      headers: {
-        location: { value: 'https://${domainName}' + uri }
-      }
+      headers: { location: { value: 'https://${domainName}' + uri } }
     };
   }
 
-  // Redirect resume subdomain to /resume path
   if (host === 'resume.${domainName}') {
     return {
       statusCode: 301,
       statusDescription: 'Moved Permanently',
-      headers: {
-        location: { value: 'https://${domainName}/resume' }
-      }
+      headers: { location: { value: 'https://${domainName}/resume' } }
     };
   }
 
-  // Append index.html to directory requests
   if (uri.endsWith('/')) {
     request.uri = uri + 'index.html';
   } else if (!uri.includes('.')) {
@@ -79,12 +66,10 @@ function handler(event) {
       runtime: cloudfront.FunctionRuntime.JS_2_0,
     });
 
-    // Origin Access Control — only CloudFront can read from S3
     const oac = new cloudfront.S3OriginAccessControl(this, 'OAC', {
       description: 'portfolio OAC for S3 bucket access',
     });
 
-    // Security headers policy applied to all responses
     const securityHeadersPolicy = new cloudfront.ResponseHeadersPolicy(this, 'SecurityHeaders', {
       securityHeadersBehavior: {
         strictTransportSecurity: {
@@ -109,15 +94,10 @@ function handler(event) {
       },
     });
 
-    // API Gateway origin for contact form proxy
-    // Proxies /contact requests to API Gateway
-    // API Gateway URL never appears in HTML source code
     const apiOrigin = new origins.HttpOrigin(apiOriginDomain, {
-      originPath: '/contact',
       protocolPolicy: cloudfront.OriginProtocolPolicy.HTTPS_ONLY,
     });
 
-    // Cache policy for API — no caching, always fresh
     const apiCachePolicy = new cloudfront.CachePolicy(this, 'APICachePolicy', {
       cachePolicyName: 'portfolio-api-no-cache',
       defaultTtl: cdk.Duration.seconds(0),
@@ -125,7 +105,6 @@ function handler(event) {
       maxTtl: cdk.Duration.seconds(0),
     });
 
-    // CloudFront distribution
     const distribution = new cloudfront.Distribution(this, 'Distribution', {
       comment: 'portfolio',
       domainNames: [
@@ -134,8 +113,6 @@ function handler(event) {
         `resume.${domainName}`,
       ],
       certificate,
-
-      // Default behavior — serves static site from S3
       defaultBehavior: {
         origin: origins.S3BucketOrigin.withOriginAccessControl(bucket, {
           originAccessControl: oac,
@@ -148,10 +125,6 @@ function handler(event) {
           eventType: cloudfront.FunctionEventType.VIEWER_REQUEST,
         }],
       },
-
-      // /contact behavior — proxies to API Gateway
-      // Visitor sees yourdomain.com/contact in the HTML
-      // Real API Gateway URL is never exposed
       additionalBehaviors: {
         '/contact': {
           origin: apiOrigin,
@@ -163,9 +136,7 @@ function handler(event) {
           responseHeadersPolicy: securityHeadersPolicy,
         },
       },
-
       defaultRootObject: 'index.html',
-
       errorResponses: [
         {
           httpStatus: 403,
@@ -180,11 +151,20 @@ function handler(event) {
           ttl: cdk.Duration.minutes(5),
         },
       ],
-
       priceClass: cloudfront.PriceClass.PRICE_CLASS_100,
       enableIpv6: true,
       enableLogging: true,
       logFilePrefix: 'cloudfront-logs/',
+    });
+
+    // BucketDeployment without distribution reference
+    // Cache invalidation handled separately via CLI after deploy
+    new s3deploy.BucketDeployment(this, 'DeployWebsite', {
+      sources: [s3deploy.Source.asset('./website')],
+      destinationBucket: bucket,
+      cacheControl: [
+        s3deploy.CacheControl.fromString('max-age=300, must-revalidate'),
+      ],
     });
 
     this.distributionDomainName = distribution.distributionDomainName;
@@ -196,7 +176,7 @@ function handler(event) {
 
     new cdk.CfnOutput(this, 'DistributionId', {
       value: distribution.distributionId,
-      description: 'CloudFront distribution ID',
+      description: 'CloudFront distribution ID — use for cache invalidation after deploys',
     });
 
     new cdk.CfnOutput(this, 'GoDaddyNote', {
@@ -205,7 +185,7 @@ function handler(event) {
     });
 
     new cdk.CfnOutput(this, 'ContactEndpointNote', {
-      value: `Contact form endpoint visible in HTML: https://${domainName}/contact — API Gateway URL never exposed`,
+      value: `Contact form endpoint in HTML: https://${domainName}/contact — API Gateway URL never exposed`,
       description: 'CloudFront proxy hides real API Gateway endpoint',
     });
   }

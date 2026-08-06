@@ -13,7 +13,7 @@ interface PortfolioAPIStackProps extends cdk.StackProps {
 }
 
 export class PortfolioAPIStack extends cdk.Stack {
-  // Expose API endpoint so CDN stack can create proxy behavior
+  public readonly apiOriginDomain: string;
   public readonly apiEndpoint: string;
 
   constructor(scope: Construct, id: string, props: PortfolioAPIStackProps) {
@@ -21,9 +21,6 @@ export class PortfolioAPIStack extends cdk.Stack {
 
     const { domainName } = props;
 
-    // Read sensitive email values from SSM Parameter Store
-    // These are created via setup-ssm-params.ps1 before first deploy
-    // Values never appear in code or GitHub
     const fromEmail = ssm.StringParameter.valueForStringParameter(
       this, '/portfolio/contact-email-from'
     );
@@ -32,36 +29,46 @@ export class PortfolioAPIStack extends cdk.Stack {
     );
 
     // SES domain verification
-    // CDK creates the domain identity and outputs the DNS TXT record
-    // You add the TXT record manually in GoDaddy
     const domainIdentity = new ses.EmailIdentity(this, 'DomainIdentity', {
       identity: ses.Identity.domain(domainName),
     });
 
-    // Output DNS records needed for SES domain verification in GoDaddy
     new cdk.CfnOutput(this, 'SESDKIMRecord1', {
-      value: `CNAME: ${domainIdentity.dkimDnsTokenName1}._domainkey.${domainName} -> ${domainIdentity.dkimDnsTokenValue1}.dkim.amazonses.com`,
+      value: cdk.Fn.join('', [
+        'CNAME: ', domainIdentity.dkimDnsTokenName1,
+        '._domainkey.', domainName,
+        ' -> ', domainIdentity.dkimDnsTokenValue1,
+        '.dkim.amazonses.com'
+      ]),
       description: 'SES DKIM record 1 — add to GoDaddy',
     });
 
     new cdk.CfnOutput(this, 'SESDKIMRecord2', {
-      value: `CNAME: ${domainIdentity.dkimDnsTokenName2}._domainkey.${domainName} -> ${domainIdentity.dkimDnsTokenValue2}.dkim.amazonses.com`,
+      value: cdk.Fn.join('', [
+        'CNAME: ', domainIdentity.dkimDnsTokenName2,
+        '._domainkey.', domainName,
+        ' -> ', domainIdentity.dkimDnsTokenValue2,
+        '.dkim.amazonses.com'
+      ]),
       description: 'SES DKIM record 2 — add to GoDaddy',
     });
 
     new cdk.CfnOutput(this, 'SESDKIMRecord3', {
-      value: `CNAME: ${domainIdentity.dkimDnsTokenName3}._domainkey.${domainName} -> ${domainIdentity.dkimDnsTokenValue3}.dkim.amazonses.com`,
+      value: cdk.Fn.join('', [
+        'CNAME: ', domainIdentity.dkimDnsTokenName3,
+        '._domainkey.', domainName,
+        ' -> ', domainIdentity.dkimDnsTokenValue3,
+        '.dkim.amazonses.com'
+      ]),
       description: 'SES DKIM record 3 — add to GoDaddy',
     });
 
-    // CloudWatch log group for Lambda
     const logGroup = new logs.LogGroup(this, 'ContactFunctionLogs', {
       logGroupName: '/aws/lambda/portfolio-contact-form',
       retention: logs.RetentionDays.THREE_MONTHS,
       removalPolicy: cdk.RemovalPolicy.DESTROY,
     });
 
-    // Lambda function — Python contact form handler
     const contactFunction = new lambda.Function(this, 'ContactFunction', {
       functionName: 'portfolio-contact-form',
       description: 'Handles contact form submissions and sends email via SES',
@@ -75,26 +82,20 @@ export class PortfolioAPIStack extends cdk.Stack {
         SES_REGION: 'us-east-1',
         FROM_EMAIL: fromEmail,
         TO_EMAIL: toEmail,
-        // CloudFront proxies /contact to API Gateway
-        // so ALLOWED_ORIGIN is your domain, not the API Gateway URL
         ALLOWED_ORIGIN: `https://${domainName}`,
       },
     });
 
-    // Grant Lambda permission to send email via SES only
-    // Least privilege — no other permissions
     contactFunction.addToRolePolicy(new iam.PolicyStatement({
       effect: iam.Effect.ALLOW,
       actions: ['ses:SendEmail'],
       resources: ['*'],
     }));
 
-    // HTTP API Gateway
     const api = new apigateway.HttpApi(this, 'ContactAPI', {
       apiName: 'portfolio-api',
       description: 'portfolio contact form API',
       corsPreflight: {
-        // Allow requests from your domain via CloudFront proxy
         allowOrigins: [`https://${domainName}`],
         allowMethods: [apigateway.CorsHttpMethod.POST, apigateway.CorsHttpMethod.OPTIONS],
         allowHeaders: ['Content-Type'],
@@ -102,7 +103,6 @@ export class PortfolioAPIStack extends cdk.Stack {
       },
     });
 
-    // POST /contact route triggers Lambda
     api.addRoutes({
       path: '/contact',
       methods: [apigateway.HttpMethod.POST],
@@ -112,7 +112,6 @@ export class PortfolioAPIStack extends cdk.Stack {
       ),
     });
 
-    // Throttling to prevent abuse and runaway costs
     const stage = api.defaultStage?.node.defaultChild as apigateway.CfnStage;
     if (stage) {
       stage.defaultRouteSettings = {
@@ -121,10 +120,14 @@ export class PortfolioAPIStack extends cdk.Stack {
       };
     }
 
-    // Expose endpoint for CDN stack proxy behavior
+    // Extract hostname from API endpoint token safely
+    // cdk.Fn.select and cdk.Fn.split resolve at deploy time, not synth time
+    this.apiOriginDomain = cdk.Fn.select(1,
+      cdk.Fn.split('//', api.apiEndpoint)
+    );
+
     this.apiEndpoint = `${api.apiEndpoint}/contact`;
 
-    // Output is for your reference only — never appears in HTML source
     new cdk.CfnOutput(this, 'APIEndpoint', {
       value: this.apiEndpoint,
       description: 'API Gateway endpoint — proxied via CloudFront, never exposed in HTML',
