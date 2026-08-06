@@ -17,11 +17,11 @@ param(
 Write-Host "Creating SSM parameters for portfolio..." -ForegroundColor Cyan
 
 # Email address SES sends FROM
-# Must be at a domain verified in SES
+# Stored as String — CloudFormation does not support SecureString references
 aws ssm put-parameter `
   --name "/portfolio/contact-email-from" `
   --value $FromEmail `
-  --type "SecureString" `
+  --type "String" `
   --description "portfolio contact form FROM email address" `
   --overwrite `
   --profile $Profile
@@ -35,7 +35,7 @@ if ($LASTEXITCODE -ne 0) {
 aws ssm put-parameter `
   --name "/portfolio/contact-email-to" `
   --value $ToEmail `
-  --type "SecureString" `
+  --type "String" `
   --description "portfolio contact form TO email address" `
   --overwrite `
   --profile $Profile
