@@ -1,0 +1,35 @@
+# CDK output and build artifacts
+cdk.out/
+dist/
+*.js
+*.js.map
+*.d.ts
+
+# Dependencies
+node_modules/
+
+# Sensitive CDK context — contains your real domain name
+# Copy cdk.json.example to cdk.json and fill in your values
+cdk.json
+cdk.context.json
+
+# Environment files
+.env
+.env.*
+
+# AWS credentials — should never be in source control
+.aws/
+
+# OS artifacts
+.DS_Store
+Thumbs.db
+
+# Editor artifacts
+.vscode/settings.json
+.idea/
+*.swp
+*.swo
+
+# Logs
+*.log
+npm-debug.log*

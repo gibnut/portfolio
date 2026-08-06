@@ -1,0 +1,453 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Resume</title>
+<style>
+  :root {
+    --bg: #ffffff;
+    --surface: #ffffff;
+    --text-primary: #1a1a1a;
+    --text-secondary: #444444;
+    --text-muted: #666666;
+    --border: #cccccc;
+    --accent: #1F4E79;
+    --accent-rule: #1F4E79;
+    --link: #185FA5;
+    --input-bg: #f9f9f9;
+    --btn-bg: #1F4E79;
+    --btn-text: #ffffff;
+    --success-bg: #eaf3de;
+    --success-text: #27500A;
+    --error-bg: #fcebeb;
+    --error-text: #791F1F;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0f1117;
+      --surface: #1a1e2a;
+      --text-primary: #e8eaf0;
+      --text-secondary: #b0b4c0;
+      --text-muted: #7a8099;
+      --border: #2e3347;
+      --accent: #5B9BD5;
+      --accent-rule: #3a6fa8;
+      --link: #7ab3e0;
+      --input-bg: #12151f;
+      --btn-bg: #3a6fa8;
+      --btn-text: #ffffff;
+      --success-bg: #17340433;
+      --success-text: #97C459;
+      --error-bg: #50131333;
+      --error-text: #F09595;
+    }
+  }
+
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    background: var(--bg);
+    color: var(--text-primary);
+    font-family: Arial, Helvetica, sans-serif;
+    font-size: 13px;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+    padding: 32px 16px;
+  }
+
+  .page {
+    max-width: 780px;
+    margin: 0 auto;
+    background: var(--surface);
+    padding: 48px 56px;
+    border: 0.5px solid var(--border);
+    border-radius: 4px;
+  }
+
+  .name {
+    font-size: 30px;
+    font-weight: 700;
+    letter-spacing: 1.5px;
+    text-align: center;
+    text-transform: uppercase;
+    color: var(--text-primary);
+    margin: 0 0 6px;
+  }
+
+  .contact {
+    text-align: center;
+    font-size: 12px;
+    color: var(--text-muted);
+    margin: 0 0 24px;
+    line-height: 1.8;
+  }
+
+  .contact a {
+    color: var(--link);
+    text-decoration: none;
+  }
+
+  .contact a:hover { text-decoration: underline; }
+  .contact .sep { margin: 0 6px; color: var(--border); }
+
+  .section { margin: 0 0 20px; }
+
+  .section-heading {
+    font-size: 10.5px;
+    font-weight: 700;
+    letter-spacing: 2.5px;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin: 0 0 4px;
+  }
+
+  .section-rule {
+    border: none;
+    border-top: 1.5px solid var(--accent-rule);
+    margin: 0 0 10px;
+  }
+
+  .summary {
+    font-size: 12.5px;
+    line-height: 1.75;
+    color: var(--text-secondary);
+  }
+
+  .qual-row {
+    display: flex;
+    gap: 10px;
+    margin: 0 0 5px;
+    font-size: 12px;
+  }
+
+  .qual-label {
+    font-weight: 700;
+    min-width: 100px;
+    flex-shrink: 0;
+    color: var(--text-primary);
+  }
+
+  .qual-value { color: var(--text-secondary); line-height: 1.55; }
+
+  .employer-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    margin: 12px 0 0;
+    flex-wrap: wrap;
+    gap: 4px;
+  }
+
+  .employer-name { font-size: 13px; font-weight: 700; color: var(--text-primary); }
+  .employer-date { font-size: 12px; color: var(--text-muted); white-space: nowrap; }
+
+  .job-title {
+    font-size: 12px;
+    font-style: italic;
+    color: var(--text-muted);
+    margin: 2px 0 6px;
+  }
+
+  .job-overview {
+    font-size: 12px;
+    line-height: 1.65;
+    color: var(--text-secondary);
+    margin: 0 0 6px;
+  }
+
+  .job-bullets { margin: 0 0 8px; padding-left: 18px; }
+
+  .job-bullets li {
+    font-size: 12px;
+    line-height: 1.65;
+    color: var(--text-secondary);
+    margin: 0 0 3px;
+  }
+
+  .edu-block { margin: 0 0 10px; }
+
+  .edu-institution {
+    font-size: 13px;
+    font-weight: 700;
+    color: var(--text-primary);
+    margin: 0 0 2px;
+  }
+
+  .edu-detail { font-size: 12px; color: var(--text-secondary); margin: 0 0 1px; }
+
+  .contact-form { margin: 0; }
+
+  .form-row { margin: 0 0 10px; }
+
+  .form-row label {
+    display: block;
+    font-size: 11px;
+    font-weight: 700;
+    color: var(--text-muted);
+    margin: 0 0 4px;
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+  }
+
+  .form-row input,
+  .form-row textarea {
+    width: 100%;
+    background: var(--input-bg);
+    border: 0.5px solid var(--border);
+    border-radius: 4px;
+    padding: 8px 10px;
+    font-size: 12px;
+    font-family: Arial, sans-serif;
+    color: var(--text-primary);
+    outline: none;
+    transition: border-color 0.15s;
+  }
+
+  .form-row input:focus,
+  .form-row textarea:focus { border-color: var(--accent); }
+
+  .form-row textarea { resize: vertical; min-height: 90px; }
+
+  .form-submit {
+    background: var(--btn-bg);
+    color: var(--btn-text);
+    border: none;
+    border-radius: 4px;
+    padding: 8px 20px;
+    font-size: 12px;
+    font-family: Arial, sans-serif;
+    font-weight: 700;
+    cursor: pointer;
+    letter-spacing: 0.5px;
+    transition: opacity 0.15s;
+  }
+
+  .form-submit:hover { opacity: 0.85; }
+  .form-submit:disabled { opacity: 0.5; cursor: not-allowed; }
+
+  .form-status {
+    display: none;
+    margin: 10px 0 0;
+    padding: 8px 12px;
+    border-radius: 4px;
+    font-size: 12px;
+  }
+
+  .form-status.success {
+    display: block;
+    background: var(--success-bg);
+    color: var(--success-text);
+  }
+
+  .form-status.error {
+    display: block;
+    background: var(--error-bg);
+    color: var(--error-text);
+  }
+
+  .print-btn {
+    display: block;
+    width: fit-content;
+    margin: 0 auto 20px;
+    font-size: 12px;
+    font-family: Arial, sans-serif;
+    color: var(--link);
+    background: transparent;
+    border: 0.5px solid var(--link);
+    border-radius: 4px;
+    padding: 5px 14px;
+    cursor: pointer;
+  }
+
+  .print-btn:hover { opacity: 0.8; }
+
+  @media print {
+    body { padding: 0; background: #fff; }
+    .page { border: none; border-radius: 0; padding: 24px 32px; max-width: 100%; }
+    .print-btn { display: none; }
+    .section:last-child { display: none; }
+    :root {
+      --bg: #ffffff; --surface: #ffffff; --text-primary: #1a1a1a;
+      --text-secondary: #444444; --text-muted: #666666; --border: #cccccc;
+      --accent: #1F4E79; --accent-rule: #1F4E79;
+    }
+  }
+
+  @media (max-width: 600px) {
+    .page { padding: 24px 20px; }
+    .name { font-size: 22px; }
+    .qual-row { flex-direction: column; gap: 2px; }
+    .qual-label { min-width: unset; }
+    .employer-row { flex-direction: column; }
+  }
+</style>
+</head>
+<body>
+
+<button class="print-btn" onclick="window.print()">Print / Save as PDF</button>
+
+<div class="page">
+
+  <h1 class="name">Daniel Willis</h1>
+  <div class="contact">
+    Florida
+    <span class="sep">|</span>
+    <a href="https://www.linkedin.com/in/dan-willis" target="_blank" rel="noopener">linkedin.com/in/dan-willis</a>
+    <span class="sep">|</span>
+    <a href="https://lookingupstuff.com/resume" target="_blank" rel="noopener">lookingupstuff.com/resume</a>
+  </div>
+
+  <div class="section">
+    <p class="section-heading">Summary</p>
+    <hr class="section-rule">
+    <p class="summary">Infrastructure engineer with 20+ years of hands-on engineering experience and 15 years of progressive growth at a single organization, advancing to Director of Cloud Operations. Career built on traditional datacenter foundations and evolved through hybrid environments and cloud migrations, with extensive expertise in network architecture, firewall management, systems administration, and cloud operations. Experience leading teams while remaining involved in automation, deployment pipelines, and cloud infrastructure. Pursuing remote roles where technical depth and operational leadership combine.</p>
+  </div>
+
+  <div class="section">
+    <p class="section-heading">Qualifications</p>
+    <hr class="section-rule">
+    <div class="qual-row"><span class="qual-label">Cloud</span><span class="qual-value">AWS (VPC, EC2, S3, IAM, Route 53, RDS, DynamoDB, Backup), cloud-hosted Windows and Linux server deployment and administration, hybrid and multi-environment architecture</span></div>
+    <div class="qual-row"><span class="qual-label">Networking</span><span class="qual-value">Network architecture design, Cisco firewall, router, and switch configuration, firewall policy management, hybrid cloud connectivity</span></div>
+    <div class="qual-row"><span class="qual-label">Virtualization</span><span class="qual-value">VMware vCenter / vSphere, Hyper-V, AWS EC2 virtualization</span></div>
+    <div class="qual-row"><span class="qual-label">Automation</span><span class="qual-value">Infrastructure as Code (AWS CDK), Bash, Python, PowerShell</span></div>
+    <div class="qual-row"><span class="qual-label">Monitoring</span><span class="qual-value">Grafana, Prometheus, NodePing</span></div>
+    <div class="qual-row"><span class="qual-label">Microsoft</span><span class="qual-value">Microsoft 365 administration, Exchange Server (on-premises and hybrid), Active Directory, Windows Server</span></div>
+    <div class="qual-row"><span class="qual-label">Software</span><span class="qual-value">Veeam, Backup Exec</span></div>
+    <div class="qual-row"><span class="qual-label">AI</span><span class="qual-value">Operational use of Amazon Q, AWS AI agent (custom deployment), Cursor, and Claude for development assistance and infrastructure automation</span></div>
+  </div>
+
+  <div class="section">
+    <p class="section-heading">Employment History</p>
+    <hr class="section-rule">
+
+    <div class="employer-row">
+      <span class="employer-name">Darwin (formerly Palm Coast Data) &mdash; Palm Coast, FL</span>
+      <span class="employer-date">2010 &ndash; 2026</span>
+    </div>
+
+    <p class="job-title">Director of Cloud Operations &nbsp;|&nbsp; 2023 &ndash; Present</p>
+    <p class="job-overview">Led cloud operations and infrastructure strategy for a multi-account AWS organization, overseeing all cloud-hosted systems while maintaining hybrid connectivity to remaining on-premises infrastructure. Managed QA and afterhours support teams while continuing to serve as sole subject matter expert for legacy and transitional systems across the organization.</p>
+    <ul class="job-bullets">
+      <li>Single-handedly architected and executed migration of 175+ on-premises datacenter systems to AWS EC2, consolidating to approximately 45 instances over two years</li>
+      <li>Built and maintained site-to-site VPN connections between Cisco on-premises network and AWS cloud infrastructure</li>
+      <li>Led infrastructure migrations for multiple acquired companies including PCS, PSA, KCK, Stamats, and DSB (UK and Germany), each provisioned as separate AWS member accounts within the organization</li>
+      <li>Deployed and managed AWS CDK for infrastructure as code, streamlining provisioning and configuration</li>
+      <li>Configured Exchange Online hybrid and migrated 100+ mailboxes from on-premises Exchange to Microsoft 365</li>
+      <li>Implemented monitoring and observability stack using Grafana, Prometheus, and NodePing</li>
+      <li>Utilized Amazon Q, AWS AI agents across member accounts, Cursor, and Claude for development assistance and infrastructure automation</li>
+    </ul>
+
+    <p class="job-title">Network Administrator &nbsp;|&nbsp; 2010 &ndash; 2023</p>
+    <p class="job-overview">Administration and maintenance of Windows, Exchange, and Linux servers, ESX hosts, and virtual machines. Managed backups and restores using BackupExec with offsite tape rotation. Coordinated support vendors for installation and upgrade of third-party applications including Avaya Contact Center, Aspect eWorkforce, and F5. Provided escalation support for helpdesk staff.</p>
+    <ul class="job-bullets">
+      <li>Replaced Cisco ASA firewall pair with Cisco Firepower next-generation firewall pair</li>
+      <li>Installed and configured Exchange 2013, migrating mailboxes and public folders from Exchange 2007</li>
+      <li>Installed and configured Exchange 2007, migrating mailboxes and public folders from Exchange 2003 for remote Illinois office</li>
+      <li>Implemented spam filter appliance in conjunction with cloud-based filtering layer</li>
+      <li>Conducted offsite disaster recovery plan testing at Sungard facility in Philadelphia</li>
+      <li>Developed PowerShell and Exchange Management Shell scripts to automate repetitive administrative tasks</li>
+      <li>Deployed antivirus consoles across 100+ servers and 600+ workstations</li>
+    </ul>
+
+    <div class="employer-row">
+      <span class="employer-name">City of Palm Coast &mdash; Palm Coast, FL</span>
+      <span class="employer-date">2006 &ndash; 2010</span>
+    </div>
+
+    <p class="job-title">IT Specialist</p>
+    <p class="job-overview">Configured and maintained Cisco switches and routers for the city's municipal fiber optic network. Deployed and maintained virtual servers on VMware. Administered Windows servers and workstations including updates, group policy, backups, troubleshooting, and parts procurement. Coordinated third-party vendors performing infrastructure work for the city. Provided end-user support including account management, PC imaging, and hardware setup.</p>
+    <ul class="job-bullets">
+      <li>Interconnected multiple enterprise sites across the city-owned fiber optic network, enabling reliable communication between departments</li>
+      <li>Interconnected multiple FiberNET customers to the city-owned fiber optic network, expanding service coverage</li>
+      <li>Established policy for the internal Track-It helpdesk system, standardizing ticket handling and improving response times</li>
+      <li>Outfitted the City Emergency Operations Center with audio/video switching and display upgrades</li>
+      <li>Configured IT training room with computers and projection equipment</li>
+    </ul>
+  </div>
+
+  <div class="section">
+    <p class="section-heading">Education</p>
+    <hr class="section-rule">
+    <div class="edu-block">
+      <p class="edu-institution">Daytona State College &mdash; Daytona Beach, FL</p>
+      <p class="edu-detail">Bachelor of Science, Information Technology</p>
+    </div>
+    <div class="edu-block">
+      <p class="edu-institution">Software Education of America &mdash; Brea, CA</p>
+      <p class="edu-detail">Microsoft Certified Systems Engineer (MCSE), 06/2000</p>
+      <p class="edu-detail">Microsoft Certified Professional (MCP), 02/2000</p>
+    </div>
+    <div class="edu-block">
+      <p class="edu-institution">CompTIA</p>
+      <p class="edu-detail">Network+ Certified Professional, 07/2004</p>
+      <p class="edu-detail">A+ Certified Professional, 08/2004</p>
+    </div>
+  </div>
+
+  <div class="section">
+    <p class="section-heading">Contact</p>
+    <hr class="section-rule">
+    <form class="contact-form" id="contactForm">
+      <div class="form-row">
+        <label for="cf-name">Your name</label>
+        <input type="text" id="cf-name" name="name" placeholder="Jane Smith" maxlength="100" required>
+      </div>
+      <div class="form-row">
+        <label for="cf-email">Your email</label>
+        <input type="email" id="cf-email" name="email" placeholder="jane@company.com" maxlength="200" required>
+      </div>
+      <div class="form-row">
+        <label for="cf-message">Message</label>
+        <textarea id="cf-message" name="message" placeholder="I'd like to discuss an opportunity..." maxlength="2000" required></textarea>
+      </div>
+      <button type="submit" class="form-submit" id="submitBtn">Send message</button>
+      <div class="form-status" id="formStatus"></div>
+    </form>
+  </div>
+
+</div>
+
+<script>
+  const ENDPOINT = 'YOUR_API_GATEWAY_URL_HERE';
+
+  document.getElementById('contactForm').addEventListener('submit', async function(e) {
+    e.preventDefault();
+    const btn = document.getElementById('submitBtn');
+    const status = document.getElementById('formStatus');
+    const name = document.getElementById('cf-name').value.trim();
+    const email = document.getElementById('cf-email').value.trim();
+    const message = document.getElementById('cf-message').value.trim();
+
+    btn.disabled = true;
+    btn.textContent = 'Sending...';
+    status.className = 'form-status';
+    status.textContent = '';
+
+    try {
+      const res = await fetch(ENDPOINT, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, email, message })
+      });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        status.className = 'form-status success';
+        status.textContent = 'Message sent. Thank you for reaching out.';
+        document.getElementById('contactForm').reset();
+      } else {
+        throw new Error(data.error || 'Unexpected error');
+      }
+    } catch (err) {
+      status.className = 'form-status error';
+      status.textContent = err.message || 'Something went wrong. Please try again.';
+    } finally {
+      btn.disabled = false;
+      btn.textContent = 'Send message';
+    }
+  });
+</script>
+
+</body>
+</html>
