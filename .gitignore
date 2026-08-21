@@ -4,6 +4,7 @@ dist/
 *.js
 *.js.map
 *.d.ts
+zone.txt
 
 # Dependencies
 node_modules/

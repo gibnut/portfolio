@@ -1,11 +1,12 @@
 #!/usr/bin/env node
 import 'source-map-support/register';
 import * as cdk from 'aws-cdk-lib';
-import * as ssm from 'aws-cdk-lib/aws-ssm';
 import { PortfolioCertificateStack } from '../lib/certificate-stack';
 import { PortfolioStorageStack } from '../lib/storage-stack';
 import { PortfolioCDNStack } from '../lib/cdn-stack';
 import { PortfolioAPIStack } from '../lib/api-stack';
+import { PortfolioDNSStack } from '../lib/dns-stack';
+import { PortfolioBudgetStack } from '../lib/budget-stack';
 
 const app = new cdk.App();
 
@@ -19,9 +20,6 @@ if (!domainName) {
   throw new Error('domainName must be set in cdk.json context. See cdk.json.example.');
 }
 
-// After first CDN deploy, store the distribution ARN in SSM:
-// aws ssm put-parameter --name /portfolio/cloudfront-distribution-arn --value "arn:aws:cloudfront::ACCOUNT:distribution/ID" --type String --profile personal
-// Then redeploy storage stack to apply the OAC bucket policy
 const cloudfrontDistributionArn = app.node.tryGetContext('cloudfrontDistributionArn') as string | undefined;
 
 // Stack 1 — ACM Certificate
@@ -32,11 +30,12 @@ const certificateStack = new PortfolioCertificateStack(app, 'PortfolioCertificat
 });
 
 // Stack 2 — S3 Storage
+// Creates both the website bucket and a dedicated logging bucket
 const storageStack = new PortfolioStorageStack(app, 'PortfolioStorageStack', {
   env,
   domainName,
   cloudfrontDistributionArn,
-  description: 'portfolio: S3 bucket for static site assets'
+  description: 'portfolio: S3 website bucket and dedicated logging bucket'
 });
 
 // Stack 3 — API (Lambda + API Gateway + SES)
@@ -47,11 +46,14 @@ const apiStack = new PortfolioAPIStack(app, 'PortfolioAPIStack', {
 });
 
 // Stack 4 — CloudFront CDN
+// Receives loggingBucketName from storage stack
+// CloudFront logs go to dedicated logging bucket — no conflict with BucketDeployment
 const cdnStack = new PortfolioCDNStack(app, 'PortfolioCDNStack', {
   env,
   domainName,
   bucketName: storageStack.bucketName,
   bucketArn: storageStack.bucketArn,
+  loggingBucketName: storageStack.loggingBucketName,
   certificate: certificateStack.certificate,
   apiOriginDomain: apiStack.apiOriginDomain,
   description: 'portfolio: CloudFront distribution, OAC, redirect function, and API proxy'
@@ -59,5 +61,20 @@ const cdnStack = new PortfolioCDNStack(app, 'PortfolioCDNStack', {
 cdnStack.addStackDependency(apiStack);
 cdnStack.addStackDependency(storageStack);
 cdnStack.addStackDependency(certificateStack);
+
+// Stack 5 — DNS
+const dnsStack = new PortfolioDNSStack(app, 'PortfolioDNSStack', {
+  env,
+  domainName,
+  description: 'portfolio: Route 53 hosted zone and DNS records'
+});
+dnsStack.addStackDependency(cdnStack);
+
+// Stack 6 — Budget
+new PortfolioBudgetStack(app, 'PortfolioBudgetStack', {
+  env,
+  domainName,
+  description: 'portfolio: Monthly cost budget and alert'
+});
 
 app.synth();

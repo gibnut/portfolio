@@ -10,6 +10,9 @@ interface PortfolioCDNStackProps extends cdk.StackProps {
   domainName: string;
   bucketName: string;
   bucketArn: string;
+  // Dedicated logging bucket name — receives CloudFront access logs
+  // Separate from the website bucket to prevent BucketDeployment conflicts
+  loggingBucketName: string;
   certificate: acm.ICertificate;
   apiOriginDomain: string;
 }
@@ -20,14 +23,18 @@ export class PortfolioCDNStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props: PortfolioCDNStackProps) {
     super(scope, id, props);
 
-    const { domainName, bucketName, bucketArn, certificate, apiOriginDomain } = props;
+    const { domainName, bucketName, bucketArn, loggingBucketName, certificate, apiOriginDomain } = props;
 
-    // Import bucket by name/arn rather than passing the object
-    // This breaks the cross-stack object reference that causes the dependency cycle
+    // Import website bucket by name/arn
+    // Avoids cross-stack object reference that caused dependency cycle
     const bucket = s3.Bucket.fromBucketAttributes(this, 'ImportedBucket', {
       bucketName,
       bucketArn,
     });
+
+    // Import logging bucket by name
+    // CloudFront access logs are written here under cloudfront-logs/ prefix
+    const loggingBucket = s3.Bucket.fromBucketName(this, 'ImportedLoggingBucket', loggingBucketName);
 
     const redirectFunction = new cloudfront.Function(this, 'RedirectFunction', {
       functionName: 'portfolio-redirects',
@@ -153,12 +160,16 @@ function handler(event) {
       ],
       priceClass: cloudfront.PriceClass.PRICE_CLASS_100,
       enableIpv6: true,
+      // CloudFront access logs go to the dedicated logging bucket
+      // No longer writing to the website bucket — eliminates BucketDeployment conflict
       enableLogging: true,
+      logBucket: loggingBucket,
       logFilePrefix: 'cloudfront-logs/',
     });
 
-    // BucketDeployment without distribution reference
-    // Cache invalidation handled separately via CLI after deploy
+    // BucketDeployment syncs website files to S3
+    // prune defaults to true but only affects the website bucket
+    // which contains only website files — no log files to conflict with
     new s3deploy.BucketDeployment(this, 'DeployWebsite', {
       sources: [s3deploy.Source.asset('./website')],
       destinationBucket: bucket,
@@ -171,7 +182,7 @@ function handler(event) {
 
     new cdk.CfnOutput(this, 'DistributionDomainName', {
       value: distribution.distributionDomainName,
-      description: 'CloudFront distribution domain — add as CNAME in GoDaddy',
+      description: 'CloudFront distribution domain',
     });
 
     new cdk.CfnOutput(this, 'DistributionId', {
@@ -179,9 +190,9 @@ function handler(event) {
       description: 'CloudFront distribution ID — use for cache invalidation after deploys',
     });
 
-    new cdk.CfnOutput(this, 'GoDaddyNote', {
-      value: `Add CNAME records in GoDaddy: ${domainName}, www.${domainName}, and resume.${domainName} all pointing to ${distribution.distributionDomainName}`,
-      description: 'Manual DNS step required in GoDaddy',
+    new cdk.CfnOutput(this, 'DistributionArnNote', {
+      value: `Add CloudFront distribution ARN to cdk.json cloudfrontDistributionArn context key, then redeploy PortfolioStorageStack to apply OAC bucket policy`,
+      description: 'Post-deploy step required after first CDN deployment',
     });
 
     new cdk.CfnOutput(this, 'ContactEndpointNote', {
