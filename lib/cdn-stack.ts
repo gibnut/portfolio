@@ -38,7 +38,11 @@ export class PortfolioCDNStack extends cdk.Stack {
 
     const redirectFunction = new cloudfront.Function(this, 'RedirectFunction', {
       functionName: 'portfolio-redirects',
-      comment: 'Handles www and subdomain redirects, and appends index.html',
+      // Full rationale: handles www/subdomain redirects, resolves the two real
+      // routes (/ and /resume) to index.html, and rejects everything else at
+      // the edge via an allowlist — stops scanner probes (/wp-*, *.php, /.env,
+      // random filenames) from ever reaching S3, instead of a blocklist.
+      comment: 'Redirects + edge allowlist for known routes/assets',
       code: cloudfront.FunctionCode.fromInline(`
 function handler(event) {
   var request = event.request;
@@ -61,13 +65,47 @@ function handler(event) {
     };
   }
 
-  if (uri.endsWith('/')) {
-    request.uri = uri + 'index.html';
-  } else if (!uri.includes('.')) {
-    request.uri = uri + '/index.html';
+  // Strip a single trailing slash for route matching. Root '/' must become
+  // '' here too, not just '/resume/' -> '/resume' — no length guard, since
+  // an empty string doesn't end in '/' anyway.
+  var path = uri;
+  if (path.charAt(path.length - 1) === '/') {
+    path = path.slice(0, -1);
   }
 
-  return request;
+  // The site has exactly two real routes. Anything else extensionless
+  // (e.g. /wp-admin, /phpmyadmin) falls through to the reject at the bottom
+  // instead of silently becoming /whatever/index.html.
+  if (path === '' || path === '/resume') {
+    request.uri = (path === '' ? '/index.html' : path + '/index.html');
+    return request;
+  }
+
+  // Static asset allowlist — anything with one of these extensions is passed
+  // through as-is. S3 will 404 it naturally if the specific file doesn't exist;
+  // this only guards against non-asset paths reaching the origin at all.
+  var allowedExtensions = [
+    '.html', '.css', '.js', '.mjs', '.json',
+    '.png', '.jpg', '.jpeg', '.gif', '.svg', '.webp', '.ico',
+    '.woff', '.woff2', '.ttf', '.eot',
+    '.pdf', '.xml', '.txt', '.webmanifest', '.map'
+  ];
+  var lower = uri.toLowerCase();
+  for (var i = 0; i < allowedExtensions.length; i++) {
+    if (lower.indexOf(allowedExtensions[i], lower.length - allowedExtensions[i].length) !== -1) {
+      return request;
+    }
+  }
+
+  // Everything else — .php, /wp-*, /.env, /.git/*, /cgi-bin/*, random-named
+  // probe files, etc. — never reaches S3. No blocklist to maintain: if it's
+  // not one of the two real routes or a recognized asset extension, it's rejected.
+  return {
+    statusCode: 404,
+    statusDescription: 'Not Found',
+    headers: { 'content-type': { value: 'text/plain' } },
+    body: { encoding: 'text', data: 'Not Found' }
+  };
 }
       `),
       runtime: cloudfront.FunctionRuntime.JS_2_0,
