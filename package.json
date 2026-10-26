@@ -1,6 +1,6 @@
 {
   "name": "portfolio",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "CDK infrastructure for portfolio site",
   "main": "bin/app.js",
   "scripts": {
@@ -11,6 +11,7 @@
   "devDependencies": {
     "@types/node": "22.x",
     "aws-cdk": "2.x",
+    "ts-node": "^10.9.2",
     "typescript": "~5.7.0"
   },
   "dependencies": {

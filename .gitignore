@@ -4,22 +4,36 @@ dist/
 *.js
 *.js.map
 *.d.ts
-zone.txt
 
-# Dependencies
-node_modules/
-
-# Sensitive CDK context — contains your real domain name
+# Sensitive CDK context - contains the account ID, real domain name and ARNs
 # Copy cdk.json.example to cdk.json and fill in your values
 cdk.json
 cdk.context.json
+
+# Exported DNS zone file - contains real DNS records
+zone.txt
+
+# Scratch files from manual Lambda test invokes (README, "Deploy")
+payload.json
+response.json
+
+# Private working notes - kept locally and in the Claude Project, not on GitHub
+CLAUDE.md
+docs/
+
+# Dependencies
+node_modules/
 
 # Environment files
 .env
 .env.*
 
-# AWS credentials — should never be in source control
+# AWS credentials - should never be in source control
 .aws/
+
+# Python caches
+__pycache__/
+*.pyc
 
 # OS artifacts
 .DS_Store

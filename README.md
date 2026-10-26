@@ -1,61 +1,74 @@
 # portfolio
 
-AWS CDK infrastructure for a personal digital CV and portfolio site.
+AWS CDK (TypeScript) infrastructure for a personal digital CV and portfolio site.
 
 ## Architecture
 
 ```
-Route 53 DNS
-    └── CloudFront Distribution (portfolio)
-            ├── Redirect Function (www → apex, resume subdomain → /resume,
-            │                      edge allowlist rejects non-site requests)
-            ├── Security Headers
-            └── S3 Origin (private bucket via OAC)
-                    └── website/
-                            ├── index.html         (homepage)
-                            └── resume/
-                                    └── index.html (digital CV)
+Route 53 DNS (hosted zone, A + AAAA aliases for apex, www, resume)
+    └── CloudFront Distribution
+            ├── Edge function (CloudFront Functions)
+            │     www -> apex, resume subdomain -> /resume, one clean URL per page,
+            │     strict allowlist: unknown paths get the branded 404 at the edge
+            ├── Security headers
+            ├── /api/contact -> API Gateway (exact path, never cached)
+            └── S3 origin (private bucket via OAC)
+                    └── website/ + generated robots.txt and sitemap.xml
 
-Contact Form
-    └── API Gateway (portfolio-api)
+Contact form
+    └── API Gateway (portfolio-api, rate limited)
             └── Lambda (portfolio-contact-form)
-                    └── SES → your email
+                    └── SES -> your email
 
-Logging
-    └── S3 Logging Bucket (domain-logs)
-            ├── s3-access-logs/            (S3 access logs)
-            ├── cloudfront-logs/           (raw CloudFront access logs)
-            └── cloudfront-logs-optimized/ (partitioned Parquet, written by the ETL Lambda below)
+Logging (logging bucket, everything expires after retentionDays)
+    ├── s3-access-logs/            S3 access logs
+    ├── cloudfront-logs/           raw CloudFront access logs
+    └── cloudfront-logs-optimized/ partitioned Parquet, written by the ETL Lambda
 
-Log Analysis
+Log analysis
     └── Athena / Glue (portfolio_logs database)
-            ├── cloudfront_logs           (raw, queries the logs above directly)
-            ├── cloudfront_logs_optimized (partitioned Parquet — faster, cheaper to query)
+            ├── cloudfront_logs            raw, queries the logs above directly
+            ├── cloudfront_logs_optimized  partitioned Parquet, faster and cheaper
             └── Lambda (portfolio-log-etl), daily via EventBridge
-                    ├── raw logs → Parquet → cloudfront-logs-optimized/
-                    ├── registers the day's partition
-                    └── SES → daily traffic summary email
+                    ├── raw logs -> Parquet, registers the day's partition
+                    └── SES -> daily traffic summary email
 ```
 
 ## Stacks
 
-| Stack | Resources |
-|---|---|
-| `PortfolioCertificateStack` | ACM wildcard certificate |
-| `PortfolioStorageStack` | S3 website bucket, dedicated logging bucket |
-| `PortfolioCDNStack` | CloudFront distribution, OAC, redirect function (with edge allowlist), security headers, website deployment |
-| `PortfolioAPIStack` | Lambda contact form, API Gateway, SES domain verification |
-| `PortfolioDNSStack` | Route 53 hosted zone, alias records, zone file import |
-| `PortfolioBudgetStack` | Monthly cost budget and alert |
-| `PortfolioAthenaStack` | Glue database/tables, Athena workgroup + saved queries, ETL Lambda, EventBridge schedule, CloudWatch alarm |
+| Stack | Resources | Termination protection |
+|---|---|---|
+| `PortfolioCertificateStack` | ACM wildcard certificate (apex + `*`) | Yes |
+| `PortfolioStorageStack` | S3 website bucket (versioned, old versions expire), logging bucket | Yes |
+| `PortfolioAPIStack` | Contact Lambda, HTTP API, SES domain identity | Yes |
+| `PortfolioCDNStack` | CloudFront distribution, OAC, edge function, security headers, website deployment | Yes |
+| `PortfolioDNSStack` | Route 53 hosted zone, alias records, zone file import, shared zone parameters | Yes |
+| `PortfolioAthenaStack` | Glue database and tables, Athena workgroup and saved queries, ETL Lambda, schedule, alarm | No |
+
+Termination protection only blocks deleting a stack; deploys and updates are unaffected. To delete a
+protected stack, turn it off first:
+`aws cloudformation update-termination-protection --no-enable-termination-protection --stack-name <name> --profile <profile>`.
+
+## Built-in checks
+
+`bin/app.ts` fails `cdk synth` (and therefore every deploy) when:
+
+- `accountId` in `cdk.json` isn't a real 12-digit account ID. Every stack is pinned to that account,
+  so the CLI refuses to deploy with credentials for any other account.
+- `domainName` isn't set, or an optional ARN in `cdk.json` is a leftover placeholder.
+- `retentionDays` isn't a value CloudWatch log groups accept.
+- Any template contains a non-ASCII character (CloudFormation stores them mangled, and `cdk diff`
+  then reports phantom changes).
+- Any Lambda, including CDK's own helper Lambdas, has no log group with a retention period.
+- The edge function would exceed CloudFront Functions' 10 KB limit.
+- `website/robots.txt` or `website/sitemap.xml` exists (they are generated; see below).
 
 ## Prerequisites
 
 - Node.js 20+
 - AWS CDK v2: `npm install -g aws-cdk`
-- AWS CLI configured with a named profile
-- AWS IAM Identity Center configured for authentication
-- CDK bootstrapped: `cdk bootstrap aws://ACCOUNT_ID/us-east-1 --profile YOUR_PROFILE`
+- AWS CLI v2 with an IAM Identity Center (SSO) profile for the target account
+- CDK bootstrapped in the target account: `cdk bootstrap aws://ACCOUNT_ID/us-east-1 --profile YOUR_PROFILE`
 
 ## Setup
 
@@ -70,229 +83,187 @@ npm install
 ### 2. Configure CDK context
 
 ```powershell
-cp cdk.json.example cdk.json
+Copy-Item cdk.json.example cdk.json
 ```
 
-Edit `cdk.json` and set your domain name, CloudFront distribution ARN, and the pandas Lambda
-layer ARN used by the log-analysis ETL job:
+Edit `cdk.json` (gitignored, never committed):
 
 ```json
-{
-  "context": {
-    "domainName": "your-domain.com",
-    "cloudfrontDistributionArn": "arn:aws:cloudfront::ACCOUNT_ID:distribution/DISTRIBUTION_ID",
-    "pandasLayerArn": "arn:aws:lambda:us-east-1:336392948345:layer:AWSSDKPandas-Python312:<version>"
-  }
+"context": {
+  "accountId": "123456789012",
+  "domainName": "your-domain.com",
+  "cloudfrontDistributionArn": "",
+  "pandasLayerArn": ""
 }
 ```
 
-The distribution ARN is added after the first CDN stack deployment and used to apply the OAC
-bucket policy. The pandas layer ARN is AWS-managed and versioned — look up the current one
-yourself rather than trust a hardcoded number here, since AWS periodically retires old versions:
-Lambda console → **Layers** → **Add a layer** → **AWS layers** → search
-`AWSSDKPandas-Python312` → copy the ARN shown for your region.
+- `accountId`: the AWS account every stack deploys to, in quotes.
+- `cloudfrontDistributionArn`: leave `""` until after the first CDN deploy (step 5).
+- `pandasLayerArn`: the AWS-managed pandas layer for the ETL Lambda. While it's `""`, the Athena stack
+  is skipped and everything else deploys normally. The layer is versioned and AWS retires old versions,
+  so look up the current one: Lambda console -> **Layers** -> **Add a layer** -> **AWS layers** ->
+  search `AWSSDKPandas-Python312` -> copy the ARN for your region.
 
-`cdk.json` is gitignored and will not be committed. Update `cdk.json.example` too if you add
-new context keys, so the example stays in sync with what the app actually requires.
+Update `cdk.json.example` too when you add a context key.
 
 ### 3. Create SSM parameters
 
-Sensitive values are stored in AWS SSM Parameter Store — never in code or GitHub.
-
-Run the setup script before first deployment:
+Sensitive values live in SSM Parameter Store, never in code:
 
 ```powershell
-.\scripts\setup-ssm-params.ps1 -FromEmail "noreply@yourdomain.com" -ToEmail "you@yourdomain.com" -Profile "your-profile"
+.\scripts\setup-ssm-params.ps1 -FromEmail "noreply@yourdomain.com" -ToEmail "you@yourdomain.com" -AlertEmail "you@yourdomain.com" -Profile "your-profile"
 ```
 
-This creates:
-- `/portfolio/contact-email-from`
-- `/portfolio/contact-email-to`
-
-Also create the following parameters manually after deploying the relevant stacks:
-
-```powershell
-# After deploying PortfolioCDNStack
-aws ssm put-parameter --name "/portfolio/cloudfront-domain" --value "d1234abcd.cloudfront.net" --type "String" --profile your-profile
-
-# For the budget alert email — also used by PortfolioAthenaStack's ETL failure
-# alarm and its daily traffic summary email
-aws ssm put-parameter --name "/portfolio/alert-email" --value "you@yourdomain.com" --type "String" --profile your-profile
-```
+| Parameter | Created by |
+|---|---|
+| `/portfolio/contact-email-from` | setup script |
+| `/portfolio/contact-email-to` | setup script |
+| `/portfolio/alert-email` | setup script (ETL failure alarm and daily report) |
+| `/portfolio/cloudfront-domain` | you, after the first CDN deploy (step 5) |
+| `/portfolio/certificate-arn` | `PortfolioCertificateStack` |
+| `/shared/hosted-zone-id`, `/shared/hosted-zone-name` | `PortfolioDNSStack`, for other apps in the account |
 
 ### 4. Prepare the DNS zone file
 
-The DNS stack reads `zone.txt` from the project root at synth time. This file is gitignored
-and never committed. Export your zone file from your registrar and place it at the project root:
+The DNS stack reads `zone.txt` (gitignored) from the project root at synth time. Supported record
+types: A, AAAA, CNAME, MX, TXT, CAA, SRV. Anything else produces a synth warning instead of being
+dropped silently. SOA and NS records are skipped (Route 53 manages them), and A, AAAA and CNAME
+records for the apex, `www` and `resume` are skipped because those names are CloudFront aliases.
 
-```
-portfolio/
-  zone.txt    ← gitignored, place your exported zone file here
-```
-
-SOA and NS records are skipped automatically — Route 53 manages these. A, CNAME records for
-the apex domain, www, and resume subdomains are also skipped since they are handled as
-CloudFront alias records in the DNS stack.
+`zone.txt` must also hold the ACM validation CNAME (step 5) and the three SES DKIM CNAMEs
+(`PortfolioAPIStack` outputs).
 
 ### 5. Deploy
 
-Authenticate with AWS before running any CDK commands:
-
 ```powershell
-aws sso login --profile your-profile
-$env:AWS_PROFILE = "your-profile"
+aws sso login --sso-session org
+$p = "your-profile"
+
+cdk diff --profile $p
+
+# 1. Certificate. Add the validation CNAME shown in the ACM console to the DNS zone that is
+#    currently live (and to zone.txt), and wait for the status Issued.
+cdk deploy PortfolioCertificateStack --profile $p
+
+# 2. Storage and API
+cdk deploy PortfolioStorageStack PortfolioAPIStack --profile $p
+
+# 3. CDN (needs the certificate Issued)
+cdk deploy PortfolioCDNStack --profile $p
+
+# 4. After the CDN deploys:
+#    - put the distribution ARN into cdk.json (cloudfrontDistributionArn)
+#    - store the distribution domain for the DNS stack:
+aws ssm put-parameter --name "/portfolio/cloudfront-domain" --value "d1234abcd.cloudfront.net" --type String --overwrite --profile $p
+#    - redeploy storage to attach the OAC bucket policy
+cdk deploy PortfolioStorageStack --profile $p
+
+# 5. DNS: hosted zone, aliases, zone.txt records. Then point the registrar's nameservers at the
+#    four Route 53 nameservers in the stack output.
+cdk deploy PortfolioDNSStack --profile $p
+
+# 6. Athena (needs pandasLayerArn in cdk.json)
+cdk deploy PortfolioAthenaStack --profile $p
 ```
 
-Deploy in order — the certificate must be validated before the CDN stack can deploy:
+Test the ETL pipeline without waiting for the 06:00 UTC schedule:
 
 ```powershell
-# Deploy certificate first
-cdk deploy PortfolioCertificateStack
-
-# Add the DNS validation CNAME record shown in the stack output to your registrar
-# Wait for the certificate status to reach Issued in ACM
-
-# Deploy storage and API stacks
-cdk deploy PortfolioStorageStack
-cdk deploy PortfolioAPIStack
-
-# Deploy CDN stack — requires certificate to be Issued
-cdk deploy PortfolioCDNStack
-
-# After CDN deploys:
-# 1. Copy the CloudFront distribution ARN from stack output into cdk.json
-# 2. Copy the CloudFront domain into SSM (/portfolio/cloudfront-domain)
-# 3. Redeploy storage stack to apply the OAC bucket policy
-cdk deploy PortfolioStorageStack
-
-# Deploy DNS stack — creates Route 53 hosted zone and imports zone.txt records
-cdk deploy PortfolioDNSStack
-
-# After DNS deploys:
-# Update your registrar nameservers to the four Route 53 nameservers shown in stack output
-
-# Deploy budget stack
-cdk deploy PortfolioBudgetStack
-
-# Deploy Athena stack — only depends on PortfolioStorageStack, so this can run
-# any time after step "Deploy storage and API stacks" above. Requires
-# pandasLayerArn to already be set in cdk.json (step 2).
-cdk deploy PortfolioAthenaStack
-```
-
-After `PortfolioAthenaStack` deploys, you can test the ETL pipeline immediately instead of
-waiting for the daily schedule:
-
-```powershell
-aws lambda invoke --function-name portfolio-log-etl --profile your-profile `
-  --payload '{"target_date":"2026-08-20"}' --cli-binary-format raw-in-base64-out `
-  response.json
+aws lambda invoke --function-name portfolio-log-etl --profile $p `
+  --payload '{"target_date":"2026-08-20"}' --cli-binary-format raw-in-base64-out response.json
 Get-Content response.json
 ```
 
-### 6. Update the contact form endpoint
+### 6. Contact form endpoint
 
-The contact form endpoint is proxied through CloudFront so the API Gateway URL is never
-exposed in the HTML source. Update the `ENDPOINT` constant in `website/resume/index.html`:
+The form posts to `https://yourdomain.com/api/contact`. CloudFront proxies that exact path to API
+Gateway, so the API Gateway URL never appears in the HTML. The path is `CONTACT_PATH` in
+`lib/api-stack.ts`; the form's `ENDPOINT` constant in `website/resume/index.html` must match it.
 
-```javascript
-const ENDPOINT = 'https://yourdomain.com/contact';
-```
+### 7. Content updates
 
-### 7. Invalidate the CloudFront cache after content updates
-
-After updating any HTML files and redeploying the CDN stack, invalidate the cache:
+Edit files under `website/`, then:
 
 ```powershell
-aws cloudfront create-invalidation --distribution-id YOUR_DISTRIBUTION_ID --paths "/*" --profile your-profile
+cdk deploy PortfolioCDNStack --profile $p
+aws cloudfront create-invalidation --distribution-id YOUR_DISTRIBUTION_ID --paths "/*" --profile $p
 ```
+
+A new page is a new folder with an `index.html` (or a `name.html` file): the edge function's route list
+is generated from `website/` at synth time. `robots.txt` and `sitemap.xml` are generated from
+`templates/`, with `{{domainName}}` filled in from `cdk.json`, so the real domain never appears in
+the repo.
 
 ## Querying the logs
 
-Open the Athena console, select workgroup **portfolio-logs** and database **portfolio_logs**,
-then either write ad hoc SQL or run one of the saved queries under **Saved queries**:
+In the Athena console, select workgroup **portfolio-logs** and database **portfolio_logs**, then
+write SQL or run a saved query:
 
 | Saved query | What it shows |
 |---|---|
 | `top-pages-last-7-days` | Most-requested URI paths, last 7 days |
-| `likely-human-vs-bot-traffic` | Rough bot vs. human split by user-agent pattern matching |
-| `traffic-by-day` | Requests and unique IPs per day |
+| `bot-user-agents-vs-other` | Requests from self-identified bot user agents vs everything else (not a visitor count) |
+| `traffic-by-day` | Requests and distinct IPs per day, bots included (not a visitor count) |
 | `status-code-breakdown` | Request counts by HTTP status |
 | `top-referrers` | Where traffic is coming from |
 
-These run against `cloudfront_logs` (raw). For faster, cheaper queries once a few days of
-history have accumulated, query `cloudfront_logs_optimized` instead — same columns, plus
-`year`/`month`/`day` partition columns to filter on; the ETL Lambda only backfills partitions
-you've explicitly asked it to (or the previous day, automatically, every night at 06:00 UTC).
+The saved queries read `cloudfront_logs` (raw). `cloudfront_logs_optimized` has the same columns
+plus `year`/`month`/`day` partitions; the ETL Lambda adds the previous day every night at 06:00 UTC,
+or any day you invoke it for.
 
-## Project Structure
+## Project structure
 
 ```
 portfolio/
   bin/
-    app.ts                    CDK app entry point
+    app.ts                    CDK app entry point, shared settings, synth-time checks
   lib/
     certificate-stack.ts      ACM wildcard certificate
     storage-stack.ts          S3 website bucket and dedicated logging bucket
-    cdn-stack.ts              CloudFront distribution, OAC, redirect function, website deployment
-    api-stack.ts              Lambda contact form, API Gateway, SES domain verification
+    api-stack.ts              Contact Lambda, API Gateway, SES domain verification
+    cdn-stack.ts              CloudFront distribution, OAC, edge function, website deployment
     dns-stack.ts              Route 53 hosted zone, alias records, zone file parser
-    budget-stack.ts           Monthly cost budget and alert
-    athena-stack.ts           Glue database/tables, Athena workgroup, ETL Lambda, schedule, alarm
+    athena-stack.ts           Glue tables, Athena workgroup and queries, ETL Lambda, schedule, alarm
+    common/utils/
+      retention.ts            Validates retentionDays against CloudWatch's allowed values
   lambda/
-    contact/
-      handler.py              Contact form Lambda function
-    log-etl/
-      handler.py              Converts raw CloudFront logs to partitioned Parquet, emails a daily summary
+    contact/handler.py        Contact form Lambda
+    log-etl/handler.py        Raw CloudFront logs -> partitioned Parquet, daily summary email
   website/
-    resume/
-      index.html              Digital CV page
+    index.html                Homepage
+    404/index.html            Branded 404 page (also embedded in the edge function)
+    resume/index.html         Digital CV
+  templates/
+    robots.txt                Template for /robots.txt
+    sitemap.xml               Template for /sitemap.xml
   scripts/
-    setup-ssm-params.ps1      Creates SSM parameters before first deploy
-  zone.txt                    Gitignored — exported zone file from registrar
-  cdk.json.example            Safe to commit — copy to cdk.json and fill in values
-  cdk.json                    Gitignored — contains domain name, CloudFront ARN, pandas layer ARN
-  .gitignore
-  README.md
-  package.json
-  tsconfig.json
+    setup-ssm-params.ps1      Creates SSM parameters before the first deploy
+  cdk.json.example            Committed; copy to cdk.json and fill in
+  cdk.json                    Gitignored: account ID, domain name, ARNs
+  zone.txt                    Gitignored: exported DNS zone file
 ```
 
 ## Security
 
-- S3 website bucket has all public access blocked
-- CloudFront accesses S3 via Origin Access Control — no direct S3 access possible
-- CloudFront's redirect function allowlists the two real routes (`/`, `/resume`) and known
-  static-asset extensions; everything else is rejected at the edge before reaching S3 —
-  stops vulnerability-scanner probes (`/wp-*`, `*.php`, `/.env`, etc.) without needing a
-  maintained blocklist
-- Security headers enforced on all CloudFront responses
-- Contact form rate limited at API Gateway — 10 requests per second
-- API Gateway endpoint proxied through CloudFront — never exposed in HTML source
-- Sensitive values stored in SSM Parameter Store — never in code or GitHub
-- HTTPS enforced via CloudFront viewer protocol policy
-- ACM wildcard certificate covers apex domain and all subdomains
-- S3 and CloudFront access logs written to a dedicated logging bucket
-- Logs expire automatically after 90 days
-- Athena query-results bucket blocks all public access, same as the website bucket
-- The ETL Lambda's IAM role is scoped to only the specific S3 prefixes, Glue table, and
-  Athena workgroup it needs — not broad account-wide access
-- CloudWatch alarm on the ETL Lambda's errors notifies `/portfolio/alert-email` if the
-  nightly job fails, rather than failing silently
+- S3 buckets block all public access; CloudFront reads the website bucket only through OAC
+- The edge function allowlists real routes and known static-asset extensions; everything else is
+  answered at the edge and never reaches S3, so scanner probes (`/wp-*`, `*.php`, `/.env`) never touch
+  the origin
+- Security headers on all responses (HSTS, nosniff, frame DENY, strict referrer policy)
+- Contact form rate limited at API Gateway (10 requests/second, burst 20) and proxied through CloudFront
+- HTTPS enforced by the viewer protocol policy
+- Sensitive values in SSM Parameter Store; account ID, domain and ARNs only in gitignored `cdk.json`
+- Every stack pinned to one account; data-bearing stacks have termination protection
+- Logs and old website file versions expire after `retentionDays` (90); Athena results after 30 days
+- The ETL Lambda's IAM role is scoped to its S3 prefixes, Glue table and Athena workgroup
+- A CloudWatch alarm emails `/portfolio/alert-email` if the nightly ETL job fails
 
 ## Cost estimate
 
 | Service | Estimated monthly cost |
 |---|---|
 | Route 53 hosted zone | ~$0.50 |
-| S3 | ~$0.00 |
-| CloudFront | ~$0.00 |
-| Lambda | ~$0.00 |
-| API Gateway | ~$0.00 |
-| SES | ~$0.00 |
-| Athena / Glue | ~$0.00–0.01 (queries stay well under the workgroup's 1 GB per-query scan cap) |
-| Athena ETL Lambda + EventBridge | ~$0.00 (well within Lambda free tier at this traffic volume) |
+| S3, CloudFront, Lambda, API Gateway, SES | ~$0.00 at this traffic |
+| Athena / Glue | ~$0.00-0.01 (well under the 1 GB per-query scan cap) |
 | CloudWatch alarm | ~$0.10 |
 | **Total** | **~$0.60/month** |
-
-A monthly AWS Budget alert is deployed at $5 to catch anything unexpected.

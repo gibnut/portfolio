@@ -1,8 +1,8 @@
 """
-portfolio-log-etl
+log-etl
 
 Daily job:
-1. Reads the previous day's raw CloudFront logs (gzip/TSV) from cloudfront-logs/
+1. Reads the previous day's (UTC) raw CloudFront logs (gzip/TSV) from cloudfront-logs/
 2. Converts them to Parquet, writes to cloudfront-logs-optimized/year=/month=/day=/
 3. Registers that partition in Glue via an Athena DDL query (no crawler needed)
 4. Runs a small summary query against the new partition and emails the result via SES
@@ -11,6 +11,7 @@ Triggered by an EventBridge scheduled rule (see athena-stack.ts). Can also be
 invoked manually with {"target_date": "YYYY-MM-DD"} to backfill a specific day.
 """
 
+import csv
 import datetime
 import gzip
 import io
@@ -34,10 +35,11 @@ WORKGROUP = os.environ['ATHENA_WORKGROUP']
 RESULTS_BUCKET = os.environ['RESULTS_BUCKET']
 ALERT_EMAIL_PARAM = os.environ['ALERT_EMAIL_PARAM']
 FROM_EMAIL_PARAM = os.environ['FROM_EMAIL_PARAM']
+SITE_LABEL = os.environ.get('SITE_LABEL', 'site')
 
-# Matches the CloudFront standard log format — same column order as the raw
-# Glue table in athena-stack.ts. Kept in sync manually; if that table's
-# columns ever change, update this list too.
+# Matches the CloudFront standard log format - same column order as the raw
+# Glue table in athena-stack.ts. Kept in sync manually; if that table's columns
+# ever change, update this list too.
 COLUMNS = [
     'date', 'time', 'x_edge_location', 'sc_bytes', 'c_ip', 'cs_method', 'cs_host',
     'cs_uri_stem', 'sc_status', 'cs_referer', 'cs_user_agent', 'cs_uri_query',
@@ -49,14 +51,12 @@ COLUMNS = [
     'sc_range_start', 'sc_range_end',
 ]
 
-# Explicit dtype for every column — never let pandas infer types from content.
-# This is the fix for a real bug: sc_status (e.g. "200", "403") looks numeric,
-# so pandas silently inferred int64 and wrote it into Parquet as INT64, while
-# the Glue table declares it as string — Athena rejected the file outright
-# (HIVE_BAD_DATA) since Parquet enforces physical types strictly, unlike the
-# raw TSV table's more lenient SerDe. 'date' and 'c_port' carry the same risk
-# for the same reason and are fixed here too, matching the corresponding
-# Glue schema changes in athena-stack.ts (date -> string, c_port -> bigint).
+# Explicit dtype for every column - never let pandas infer types from content.
+# sc_status (e.g. "200", "403") looks numeric, so inference would write it to
+# Parquet as INT64 while the Glue table declares it a string, and Athena rejects
+# the file (HIVE_BAD_DATA): Parquet enforces physical types strictly, unlike the
+# raw TSV table's SerDe. 'date' and 'c_port' carry the same risk and match the
+# optimized table's schema in athena-stack.ts (date -> string, c_port -> bigint).
 DTYPE_MAP = {
     'date': 'string', 'time': 'string', 'x_edge_location': 'string',
     'sc_bytes': 'Int64', 'c_ip': 'string', 'cs_method': 'string', 'cs_host': 'string',
@@ -76,7 +76,8 @@ DTYPE_MAP = {
 def handler(event, context):
     target_date = (event or {}).get('target_date')
     if not target_date:
-        target_date = (datetime.datetime.utcnow() - datetime.timedelta(days=1)).strftime('%Y-%m-%d')
+        yesterday = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=1)
+        target_date = yesterday.strftime('%Y-%m-%d')
     year, month, day = target_date.split('-')
 
     keys = _list_raw_keys_for_date(target_date)
@@ -85,6 +86,9 @@ def handler(event, context):
         return {'status': 'no_data', 'date': target_date}
 
     combined = _load_and_combine(keys)
+    if combined is None:
+        print(f'{len(keys)} raw log file(s) for {target_date} contained only header lines; nothing to do.')
+        return {'status': 'no_data', 'date': target_date, 'files_processed': len(keys)}
 
     out_prefix = f'{OPTIMIZED_PREFIX}year={year}/month={month}/day={day}/'
     out_key = f'{out_prefix}{target_date}.parquet'
@@ -101,7 +105,7 @@ def handler(event, context):
 
 
 def _list_raw_keys_for_date(target_date):
-    """CloudFront names files DISTRIBUTION_ID.YYYY-MM-DD-HH.UNIQUEID.gz — filter on the date segment."""
+    """CloudFront names files DISTRIBUTION_ID.YYYY-MM-DD-HH.UNIQUEID.gz; filter on the date segment."""
     paginator = s3.get_paginator('list_objects_v2')
     keys = []
     for page in paginator.paginate(Bucket=LOG_BUCKET, Prefix=RAW_PREFIX):
@@ -113,16 +117,46 @@ def _list_raw_keys_for_date(target_date):
     return keys
 
 
+def parse_log_text(text):
+    """
+    Parses one CloudFront log file's text into a DataFrame, or returns None if
+    it holds no records.
+
+    Only lines that START with '#' are headers (#Version, #Fields). Using
+    read_csv(comment='#') instead would also cut any record at a '#' in the
+    middle of a line (user agents and query strings can contain one), silently
+    mangling that row. A file with only header lines returns None, because
+    read_csv on empty text raises EmptyDataError.
+
+    Fields are tab-separated and never quoted, so quote characters are kept as
+    data. Only '-' (CloudFront's empty-field marker) becomes null; pandas'
+    default null markers ('NA', 'null', ...) are real values in a URL or user agent.
+    """
+    lines = [line for line in text.splitlines() if line and not line.startswith('#')]
+    if not lines:
+        return None
+    return pd.read_csv(
+        io.StringIO('\n'.join(lines)),
+        sep='\t',
+        names=COLUMNS,
+        header=None,
+        dtype=DTYPE_MAP,
+        na_values=['-'],
+        keep_default_na=False,
+        quoting=csv.QUOTE_NONE,
+    )
+
+
 def _load_and_combine(keys):
     frames = []
     for key in keys:
         body = s3.get_object(Bucket=LOG_BUCKET, Key=key)['Body'].read()
-        with gzip.GzipFile(fileobj=io.BytesIO(body)) as gz:
-            # comment='#' skips the two CloudFront header lines regardless of
-            # exact count, rather than a hardcoded skiprows=2. dtype=DTYPE_MAP
-            # forces every column to its declared type up front — no inference.
-            df = pd.read_csv(gz, sep='\t', comment='#', names=COLUMNS, na_values='-', dtype=DTYPE_MAP)
-        frames.append(df)
+        text = gzip.decompress(body).decode('utf-8', errors='replace')
+        df = parse_log_text(text)
+        if df is not None:
+            frames.append(df)
+    if not frames:
+        return None
     return pd.concat(frames, ignore_index=True)
 
 
@@ -156,7 +190,7 @@ def _run_athena_query(query, wait_for_results=False):
     )['QueryExecutionId']
 
     status = 'RUNNING'
-    for _ in range(30):  # ~60s max wait — these are small daily queries
+    for _ in range(30):  # ~60s max wait; these are small daily queries
         status = athena.get_query_execution(QueryExecutionId=qid)['QueryExecution']['Status']['State']
         if status in ('SUCCEEDED', 'FAILED', 'CANCELLED'):
             break
@@ -171,29 +205,35 @@ def _run_athena_query(query, wait_for_results=False):
     return None
 
 
-def _send_report_email(target_date, result):
-    to_addr = ssm.get_parameter(Name=ALERT_EMAIL_PARAM)['Parameter']['Value']
-    from_addr = ssm.get_parameter(Name=FROM_EMAIL_PARAM)['Parameter']['Value']
-
+def build_report(target_date, result):
+    """Returns (subject, body) for the daily email. Plain ASCII: no charset is sent."""
     rows = result['ResultSet']['Rows'] if result else []
     if len(rows) < 2:
-        body = f'No traffic summary available for {target_date} (no matching rows).'
+        body = f'No traffic summary available for {target_date} (UTC) (no matching rows).'
     else:
         headers = [c.get('VarCharValue', '') for c in rows[0]['Data']]
         values = [c.get('VarCharValue', '0') for c in rows[1]['Data']]
         summary = dict(zip(headers, values))
         body = (
-            f'CloudFront traffic summary for {target_date}\n\n'
+            f'CloudFront traffic summary for {target_date} (UTC)\n\n'
             f"Requests:          {summary.get('requests', 'n/a')}\n"
             f"Unique IPs:        {summary.get('unique_ips', 'n/a')}\n"
-            f"4xx/5xx responses: {summary.get('error_responses', 'n/a')}\n"
+            f"4xx/5xx responses: {summary.get('error_responses', 'n/a')}\n\n"
+            'Includes bots and scanners; this is not a visitor count.\n'
         )
+    subject = f'{SITE_LABEL} traffic report - {target_date}'
+    return subject, body
 
+
+def _send_report_email(target_date, result):
+    to_addr = ssm.get_parameter(Name=ALERT_EMAIL_PARAM)['Parameter']['Value']
+    from_addr = ssm.get_parameter(Name=FROM_EMAIL_PARAM)['Parameter']['Value']
+    subject, body = build_report(target_date, result)
     ses.send_email(
         Source=from_addr,
         Destination={'ToAddresses': [to_addr]},
         Message={
-            'Subject': {'Data': f'Portfolio traffic report — {target_date}'},
+            'Subject': {'Data': subject},
             'Body': {'Text': {'Data': body}},
         },
     )

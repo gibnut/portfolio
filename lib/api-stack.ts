@@ -7,10 +7,21 @@ import * as ssm from 'aws-cdk-lib/aws-ssm';
 import * as logs from 'aws-cdk-lib/aws-logs';
 import * as ses from 'aws-cdk-lib/aws-ses';
 import { Construct } from 'constructs';
+import { logRetention } from './common/utils/retention';
 
 interface PortfolioAPIStackProps extends cdk.StackProps {
   domainName: string;
+  // Physical-resource-name prefix (bin/app.ts)
+  projectSlug: string;
+  // The app-wide retention period (bin/app.ts), for the Lambda's log group
+  retentionDays: number;
 }
+
+// Path of the contact form endpoint. Under /api/ so it can't collide with a
+// page's clean URL (/contact is free for a page). CloudFront forwards the full
+// path unchanged, so the '/api/contact' behavior in cdn-stack.ts and the form's
+// endpoint in website/resume/index.html must match this exactly.
+export const CONTACT_PATH = '/api/contact';
 
 export class PortfolioAPIStack extends cdk.Stack {
   public readonly apiOriginDomain: string;
@@ -19,58 +30,44 @@ export class PortfolioAPIStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props: PortfolioAPIStackProps) {
     super(scope, id, props);
 
-    const { domainName } = props;
+    const { domainName, projectSlug, retentionDays } = props;
 
     const fromEmail = ssm.StringParameter.valueForStringParameter(
-      this, '/portfolio/contact-email-from'
+      this, `/${projectSlug}/contact-email-from`,
     );
     const toEmail = ssm.StringParameter.valueForStringParameter(
-      this, '/portfolio/contact-email-to'
+      this, `/${projectSlug}/contact-email-to`,
     );
 
-    // SES domain verification
+    // SES domain verification. The three DKIM CNAMEs below must exist in the
+    // live DNS zone (added through zone.txt) before SES verifies the domain.
     const domainIdentity = new ses.EmailIdentity(this, 'DomainIdentity', {
       identity: ses.Identity.domain(domainName),
     });
 
-    new cdk.CfnOutput(this, 'SESDKIMRecord1', {
-      value: cdk.Fn.join('', [
-        'CNAME: ', domainIdentity.dkimDnsTokenName1,
-        '._domainkey.', domainName,
-        ' -> ', domainIdentity.dkimDnsTokenValue1,
-        '.dkim.amazonses.com'
-      ]),
-      description: 'SES DKIM record 1 — add to GoDaddy',
-    });
-
-    new cdk.CfnOutput(this, 'SESDKIMRecord2', {
-      value: cdk.Fn.join('', [
-        'CNAME: ', domainIdentity.dkimDnsTokenName2,
-        '._domainkey.', domainName,
-        ' -> ', domainIdentity.dkimDnsTokenValue2,
-        '.dkim.amazonses.com'
-      ]),
-      description: 'SES DKIM record 2 — add to GoDaddy',
-    });
-
-    new cdk.CfnOutput(this, 'SESDKIMRecord3', {
-      value: cdk.Fn.join('', [
-        'CNAME: ', domainIdentity.dkimDnsTokenName3,
-        '._domainkey.', domainName,
-        ' -> ', domainIdentity.dkimDnsTokenValue3,
-        '.dkim.amazonses.com'
-      ]),
-      description: 'SES DKIM record 3 — add to GoDaddy',
+    const dkimRecords: Array<[string, string]> = [
+      [domainIdentity.dkimDnsTokenName1, domainIdentity.dkimDnsTokenValue1],
+      [domainIdentity.dkimDnsTokenName2, domainIdentity.dkimDnsTokenValue2],
+      [domainIdentity.dkimDnsTokenName3, domainIdentity.dkimDnsTokenValue3],
+    ];
+    dkimRecords.forEach(([name, value], i) => {
+      new cdk.CfnOutput(this, `SESDKIMRecord${i + 1}`, {
+        value: cdk.Fn.join('', [
+          'CNAME: ', name, '._domainkey.', domainName,
+          ' -> ', value, '.dkim.amazonses.com',
+        ]),
+        description: `SES DKIM record ${i + 1} - must exist in the live DNS zone (zone.txt)`,
+      });
     });
 
     const logGroup = new logs.LogGroup(this, 'ContactFunctionLogs', {
-      logGroupName: '/aws/lambda/portfolio-contact-form',
-      retention: logs.RetentionDays.THREE_MONTHS,
+      logGroupName: `/aws/lambda/${projectSlug}-contact-form`,
+      retention: logRetention(retentionDays),
       removalPolicy: cdk.RemovalPolicy.DESTROY,
     });
 
     const contactFunction = new lambda.Function(this, 'ContactFunction', {
-      functionName: 'portfolio-contact-form',
+      functionName: `${projectSlug}-contact-form`,
       description: 'Handles contact form submissions and sends email via SES',
       runtime: lambda.Runtime.PYTHON_3_12,
       handler: 'handler.lambda_handler',
@@ -93,8 +90,8 @@ export class PortfolioAPIStack extends cdk.Stack {
     }));
 
     const api = new apigateway.HttpApi(this, 'ContactAPI', {
-      apiName: 'portfolio-api',
-      description: 'portfolio contact form API',
+      apiName: `${projectSlug}-api`,
+      description: `${projectSlug} contact form API`,
       corsPreflight: {
         allowOrigins: [`https://${domainName}`],
         allowMethods: [apigateway.CorsHttpMethod.POST, apigateway.CorsHttpMethod.OPTIONS],
@@ -104,14 +101,15 @@ export class PortfolioAPIStack extends cdk.Stack {
     });
 
     api.addRoutes({
-      path: '/contact',
+      path: CONTACT_PATH,
       methods: [apigateway.HttpMethod.POST],
       integration: new integrations.HttpLambdaIntegration(
         'ContactIntegration',
-        contactFunction
+        contactFunction,
       ),
     });
 
+    // Rate limit: 10 requests per second, bursts of 20
     const stage = api.defaultStage?.node.defaultChild as apigateway.CfnStage;
     if (stage) {
       stage.defaultRouteSettings = {
@@ -120,22 +118,20 @@ export class PortfolioAPIStack extends cdk.Stack {
       };
     }
 
-    // Extract hostname from API endpoint token safely
-    // cdk.Fn.select and cdk.Fn.split resolve at deploy time, not synth time
-    this.apiOriginDomain = cdk.Fn.select(1,
-      cdk.Fn.split('//', api.apiEndpoint)
-    );
+    // Hostname from the API endpoint. Fn.select and Fn.split resolve at deploy
+    // time, not synth time.
+    this.apiOriginDomain = cdk.Fn.select(1, cdk.Fn.split('//', api.apiEndpoint));
 
-    this.apiEndpoint = `${api.apiEndpoint}/contact`;
+    this.apiEndpoint = `${api.apiEndpoint}${CONTACT_PATH}`;
 
     new cdk.CfnOutput(this, 'APIEndpoint', {
       value: this.apiEndpoint,
-      description: 'API Gateway endpoint — proxied via CloudFront, never exposed in HTML',
+      description: 'API Gateway endpoint - proxied via CloudFront, never exposed in HTML',
     });
 
     new cdk.CfnOutput(this, 'SESNote', {
-      value: `Add the three DKIM CNAME records above to GoDaddy for ${domainName}`,
-      description: 'Manual DNS step required for SES domain verification',
+      value: `The three DKIM CNAME records above must exist in the live DNS zone for ${domainName}`,
+      description: 'SES domain verification depends on these DNS records',
     });
   }
 }

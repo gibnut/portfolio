@@ -16,6 +16,8 @@
   },
   "context": {
     "accountId": "000000000000",
-    "domainName": "your-domain.com"
+    "domainName": "your-domain.com",
+    "cloudfrontDistributionArn": "",
+    "pandasLayerArn": ""
   }
 }

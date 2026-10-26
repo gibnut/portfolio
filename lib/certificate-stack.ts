@@ -5,44 +5,54 @@ import { Construct } from 'constructs';
 
 interface PortfolioCertificateStackProps extends cdk.StackProps {
   domainName: string;
+  // Physical-resource-name prefix (bin/app.ts)
+  projectSlug: string;
 }
 
 export class PortfolioCertificateStack extends cdk.Stack {
-  // Expose certificate so CDN stack can reference it
+  // Exposed so the CDN stack can reference it
   public readonly certificate: acm.ICertificate;
 
   constructor(scope: Construct, id: string, props: PortfolioCertificateStackProps) {
     super(scope, id, props);
 
-    const { domainName } = props;
+    const { domainName, projectSlug } = props;
 
-    // Wildcard certificate covers example.com and *.example.com
-    // DNS validation requires adding a CNAME record in GoDaddy
-    // CDK will output the required CNAME values after deploy
+    // Wildcard certificate covering example.com and *.example.com (www and
+    // resume included).
+    //
+    // DNS validation: ACM issues a CNAME that must exist in whichever DNS zone
+    // the registrar currently points to. That is deliberately done by hand
+    // (fromDns() with no zone) rather than letting CDK write the record:
+    // - During a migration the live zone may be in another account, where this
+    //   app can't write; a record in a zone that isn't live yet never validates.
+    // - Validating against the zone would make this stack depend on the DNS
+    //   stack, which already depends on CDN -> certificate (a cycle).
+    // Once issued, keep the CNAME in the live zone (zone.txt): renewal depends
+    // on it. The record name and value are shown in the ACM console.
     const certificate = new acm.Certificate(this, 'Certificate', {
-      domainName: domainName,
+      domainName,
       subjectAlternativeNames: [`*.${domainName}`],
       validation: acm.CertificateValidation.fromDns(),
     });
 
     this.certificate = certificate;
 
-    // Store certificate ARN in SSM so other stacks and local tooling
-    // can reference it without hardcoding sensitive values
+    // Certificate ARN in SSM so local tooling can reference it without
+    // hardcoding it
     new ssm.StringParameter(this, 'CertificateArnParameter', {
-      parameterName: '/portfolio/certificate-arn',
+      parameterName: `/${projectSlug}/certificate-arn`,
       stringValue: certificate.certificateArn,
-      description: 'portfolio ACM certificate ARN',
+      description: `${projectSlug} ACM certificate ARN`,
     });
 
-    // Output the certificate ARN and validation details
     new cdk.CfnOutput(this, 'CertificateArn', {
       value: certificate.certificateArn,
-      description: 'ACM Certificate ARN — store this safely, do not commit to GitHub',
+      description: 'ACM certificate ARN - do not commit to GitHub',
     });
 
     new cdk.CfnOutput(this, 'ValidationNote', {
-      value: `Add the DNS CNAME validation record to GoDaddy for ${domainName} and *.${domainName}`,
+      value: `Add the ACM DNS validation CNAME for ${domainName} and *.${domainName} to the live DNS zone, and keep it there (renewal depends on it)`,
       description: 'Manual step required to validate the certificate',
     });
   }
