@@ -81,6 +81,26 @@ function handler(event) {
     return request;
   }
 
+  // Reject dev-tooling/build-system paths outright, before the extension
+  // allowlist even runs — these are universal source-code conventions
+  // (React/Vue/Amplify/etc.), never present in a deployed static site's
+  // output regardless of what real content you add. This list is based on
+  // software conventions in general, not this site's structure, so it
+  // doesn't need updating as you add real pages or assets.
+  var blockedPrefixes = [
+    '/src/', '/node_modules/', '/vendor/', '/.git/', '/.aws/', '/.ssh/', '/cgi-bin/', '/wp-'
+  ];
+  for (var p = 0; p < blockedPrefixes.length; p++) {
+    if (uri.indexOf(blockedPrefixes[p]) === 0) {
+      return {
+        statusCode: 404,
+        statusDescription: 'Not Found',
+        headers: { 'content-type': { value: 'text/plain' } },
+        body: { encoding: 'text', data: 'Not Found' }
+      };
+    }
+  }
+
   // Static asset allowlist — anything with one of these extensions is passed
   // through as-is. S3 will 404 it naturally if the specific file doesn't exist;
   // this only guards against non-asset paths reaching the origin at all.
