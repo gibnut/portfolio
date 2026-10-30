@@ -4,14 +4,14 @@
   "description": "CDK infrastructure for portfolio site",
   "main": "bin/app.js",
   "scripts": {
-    "build": "tsc",
+    "typecheck": "tsc",
     "watch": "tsc -w",
     "cdk": "cdk"
   },
   "devDependencies": {
     "@types/node": "22.x",
     "aws-cdk": "2.x",
-    "ts-node": "^10.9.2",
+    "tsx": "^4.23.15",
     "typescript": "~5.7.0"
   },
   "dependencies": {
